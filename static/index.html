@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>视频解析下载</title>
+<style>
+  :root{
+    --bg:#0e1116; --card:#161b22; --line:#232a33; --text:#e6edf3;
+    --muted:#8b949e; --accent:#3b82f6; --accent2:#22c55e; --danger:#ef4444;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+       min-height:100vh;padding:28px 16px 60px}
+  .wrap{max-width:760px;margin:0 auto}
+  h1{font-size:22px;margin:0 0 6px;letter-spacing:.5px}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:22px}
+  .panel{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px}
+  .inputRow{display:flex;gap:10px;flex-wrap:wrap}
+  input[type=url],input[type=text]{
+    flex:1;min-width:220px;background:#0b0f14;border:1px solid var(--line);
+    border-radius:10px;padding:13px 14px;color:var(--text);font-size:15px;outline:none}
+  input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(59,130,246,.15)}
+  button{background:var(--accent);color:#fff;border:0;border-radius:10px;
+         padding:13px 20px;font-size:15px;font-weight:600;cursor:pointer;transition:.15s}
+  button:hover{filter:brightness(1.1)}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  .adv{margin-top:10px;font-size:13px;color:var(--muted);cursor:pointer;user-select:none}
+  .advBox{display:none;margin-top:10px}
+  .advBox input{width:100%}
+  .status{margin-top:16px;font-size:14px;color:var(--muted);display:none}
+  .status.show{display:block}
+  .status.err{color:var(--danger)}
+  .card{margin-top:20px;background:var(--card);border:1px solid var(--line);
+        border-radius:14px;padding:16px;display:none}
+  .card.show{display:block}
+  .head{display:flex;gap:14px}
+  .thumb{width:140px;height:80px;border-radius:8px;object-fit:cover;background:#0b0f14;flex:none}
+  .meta h2{font-size:16px;margin:0 0 8px;line-height:1.35;word-break:break-word}
+  .tags{display:flex;gap:8px;flex-wrap:wrap;font-size:12px;color:var(--muted)}
+  .tag{background:#0b0f14;border:1px solid var(--line);border-radius:6px;padding:3px 8px}
+  .tag.warn{color:#fbbf24;border-color:#78350f;background:#1c1207}
+  .tag.bad{color:#f87171;border-color:#7f1d1d;background:#1c0b0b}
+  .list{margin-top:16px;border-top:1px solid var(--line);padding-top:8px}
+  .row{display:flex;align-items:center;justify-content:space-between;gap:12px;
+       padding:11px 2px;border-bottom:1px solid var(--line);font-size:14px}
+  .row:last-child{border-bottom:0}
+  .row .left{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .pill{font-size:12px;background:#0b0f14;border:1px solid var(--line);
+        border-radius:999px;padding:2px 9px;color:var(--muted)}
+  .pill.main{color:#93c5fd;border-color:#1e40af;background:#0f1a2e}
+  .dl{flex:none;background:var(--accent2);padding:8px 14px;font-size:13px;border-radius:8px;
+      text-decoration:none;color:#04160a;font-weight:700}
+  .dl:hover{filter:brightness(1.08)}
+  .copy{background:#20262e;color:var(--muted);padding:8px 12px;font-size:13px;border-radius:8px;
+        border:1px solid var(--line);cursor:pointer}
+  .note{margin-top:14px;font-size:12px;color:var(--muted);line-height:1.6}
+  @media(max-width:520px){.head{flex-direction:column}.thumb{width:100%;height:170px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>视频解析下载</h1>
+  <div class="sub">支持 m3u8 直链、YouTube / B站 / 抖音等 yt-dlp 覆盖站点</div>
+
+  <div class="panel">
+    <div class="inputRow">
+      <input id="url" type="url" placeholder="粘贴视频页面链接或 .m3u8 直链" autocomplete="off">
+      <button id="go">解析</button>
+    </div>
+    <div class="adv" id="advToggle">高级选项（防盗链 Referer）▾</div>
+    <div class="advBox" id="advBox">
+      <input id="referer" type="text" placeholder="例如 https://example.com/ （部分站点必填）">
+    </div>
+  </div>
+
+  <div class="status" id="status"></div>
+
+  <div class="card" id="card">
+    <div class="head">
+      <img id="thumb" class="thumb" alt="">
+      <div class="meta">
+        <h2 id="title"></h2>
+        <div class="tags" id="tags"></div>
+      </div>
+    </div>
+    <div class="list" id="list"></div>
+    <div class="note" id="note"></div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let current = null;
+let refererVal = "";
+
+$('advToggle').onclick = () => {
+  const box = $('advBox');
+  const open = box.style.display === 'block';
+  box.style.display = open ? 'none' : 'block';
+  $('advToggle').textContent = open ? '高级选项（防盗链 Referer）▾' : '高级选项（防盗链 Referer）▴';
+};
+
+function setStatus(msg, isErr) {
+  const s = $('status');
+  s.textContent = msg;
+  s.className = 'status show' + (isErr ? ' err' : '');
+}
+function clearStatus(){ $('status').className = 'status'; }
+
+$('go').onclick = doParse;
+$('url').addEventListener('keydown', e => { if (e.key === 'Enter') doParse(); });
+
+async function doParse() {
+  const url = $('url').value.trim();
+  refererVal = $('referer').value.trim();
+  if (!url) return setStatus('先粘贴一个链接', true);
+
+  $('go').disabled = true;
+  $('card').classList.remove('show');
+  setStatus('解析中…');
+
+  try {
+    const res = await fetch('/api/parse', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({url, referer: refererVal || null})
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || '解析失败');
+    render(data);
+    clearStatus();
+  } catch (e) {
+    setStatus(e.message || String(e), true);
+  } finally {
+    $('go').disabled = false;
+  }
+}
+
+function render(d) {
+  current = d;
+  $('title').textContent = d.title || '未命名视频';
+  $('thumb').src = d.thumbnail || '';
+  $('thumb').style.display = d.thumbnail ? 'block' : 'none';
+
+  const tags = [];
+  if (d.type === 'm3u8') {
+    tags.push(`<span class="tag">m3u8</span>`);
+    if (d.segments) tags.push(`<span class="tag">${d.segments} 个分片</span>`);
+    if (d.is_live) tags.push(`<span class="tag warn">直播流（无 ENDLIST）</span>`);
+    if (d.encrypted) tags.push(`<span class="tag warn">加密分片（AES/DRM）</span>`);
+  } else {
+    if (d.duration && d.duration !== '-') tags.push(`<span class="tag">${d.duration}</span>`);
+    if (d.uploader) tags.push(`<span class="tag">${escapeHtml(d.uploader)}</span>`);
+    tags.push(`<span class="tag">${d.formats.length} 个格式</span>`);
+  }
+  $('tags').innerHTML = tags.join('');
+
+  const list = $('list');
+  list.innerHTML = '';
+
+  if (d.type === 'site') {
+    list.appendChild(rowEl({
+      main: '自动最佳（视频+音频合并）',
+      res: 'mp4', size: '-', fid: 'best', url: d.webpage_url
+    }, true));
+  }
+  d.formats.forEach((f, i) => {
+    const isM3u8 = d.type === 'm3u8';
+    list.appendChild(rowEl({
+      main: f.resolution || f.ext || '未知',
+      res: f.ext,
+      size: f.filesize_str || '-',
+      fid: f.format_id,
+      url: isM3u8 ? f.direct : d.webpage_url,
+      extra: f.note,
+      main_: i === 0
+    }, i === 0));
+  });
+
+  $('note').textContent = d.type === 'm3u8'
+    ? '提示：点“下载”由服务器用 ffmpeg 合并分片，耗时取决于源速度。若失败多为 Referer 未填或分片签名过期。'
+    : '提示：点“下载”由服务器用 yt-dlp 拉取并合并为 mp4。部分站点需要登录 Cookie，可按需在 app.py 增加 --cookies。';
+
+  $('card').classList.add('show');
+}
+
+function rowEl(o, primary) {
+  const row = document.createElement('div');
+  row.className = 'row';
+
+  const left = document.createElement('div');
+  left.className = 'left';
+  left.innerHTML = `
+    <span class="pill ${primary ? 'main' : ''}">${escapeHtml(o.main)}</span>
+    <span class="pill">${escapeHtml(o.res)}</span>
+    <span class="pill">${escapeHtml(o.size)}</span>
+    ${o.extra ? `<span class="pill">${escapeHtml(o.extra)}</span>` : ''}
+  `;
+
+  const right = document.createElement('div');
+  right.style.display = 'flex';
+  right.style.gap = '8px';
+
+  const a = document.createElement('a');
+  a.className = 'dl';
+  a.textContent = '下载';
+  const params = new URLSearchParams({
+    url: o.url,
+    format_id: o.fid,
+    referer: refererVal,
+    filename: (current?.title || 'video').slice(0, 60)
+  });
+  a.href = '/api/save?' + params.toString();
+  a.onclick = () => setStatus('已开始下载，大文件需要等待服务器合并，请勿关闭页面…');
+
+  right.appendChild(a);
+  row.appendChild(left);
+  row.appendChild(right);
+  return row;
+}
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+</script>
+</body>
+</html>
