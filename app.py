@@ -46,6 +46,13 @@ def ytdlp_base() -> list:
     cmd = ["yt-dlp", "--no-update", "--no-progress"]
     if COOKIES_FILE and os.path.exists(COOKIES_FILE):
         cmd += ["--cookies", COOKIES_FILE]
+    # 装了 curl_cffi 才能模拟浏览器 TLS 指纹，绕过 Cloudflare 反爬
+    try:
+        import curl_cffi  # noqa: F401
+
+        cmd += ["--impersonate", "chrome"]
+    except ImportError:
+        pass
     return cmd
 
 app = FastAPI(title="Video Parser")
