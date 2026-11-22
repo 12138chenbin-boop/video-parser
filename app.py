@@ -551,6 +551,40 @@ async def index():
         return HTMLResponse(f.read())
 
 
+@app.get("/api/debug/douyin")
+async def api_debug_douyin(url: str = Query(...)):
+    """临时诊断：看容器内访问抖音每一步的状态。"""
+    info = {"steps": []}
+    try:
+        async with httpx.AsyncClient(
+            timeout=20, follow_redirects=True, headers={"User-Agent": DOUYIN_UA}
+        ) as cli:
+            r = await cli.get(url)
+            info["steps"].append({
+                "step": "short", "status": r.status_code,
+                "len": len(r.text), "final": str(r.url)[:120],
+            })
+            m = re.search(r"(?:video|note)/(\d+)", str(r.url))
+            info["aweme_id"] = m.group(1) if m else None
+            if info["aweme_id"]:
+                share = (
+                    f"https://www.iesdouyin.com/share/video/{info['aweme_id']}/"
+                    "?region=CN&mid=0&u_code=0&titleType=title"
+                )
+                r2 = await cli.get(share)
+                data = extract_router_data(r2.text)
+                info["steps"].append({
+                    "step": "share", "status": r2.status_code,
+                    "len": len(r2.text), "router": bool(data),
+                })
+                if data:
+                    page = (data.get("loaderData") or {}).get("video_(id)/page") or {}
+                    info["has_videoInfoRes"] = bool(page.get("videoInfoRes"))
+    except Exception as e:
+        info["error"] = f"{type(e).__name__}: {e}"
+    return info
+
+
 @app.get("/healthz")
 async def health():
     return {"ok": True}
