@@ -14,6 +14,7 @@
 
 import asyncio
 import ipaddress
+import json
 import os
 import re
 import shutil
@@ -21,7 +22,7 @@ import subprocess
 import tempfile
 import uuid
 from typing import Optional
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 import httpx
 from fastapi import FastAPI, Query, Request
@@ -94,6 +95,14 @@ def headers_for(referer: Optional[str], extra: Optional[dict] = None) -> dict:
     return h
 
 
+def is_direct_media(u: str) -> bool:
+    p = urlparse(u)
+    path = (p.path or "").lower()
+    if any(path.endswith(e) for e in (".mp4", ".mov", ".webm", ".m4v", ".mp3", ".m4a")):
+        return True
+    return "aweme/v1/play" in u
+
+
 def human_size(n) -> str:
     try:
         n = float(n)
@@ -136,12 +145,112 @@ class ParseReq(BaseModel):
     referer: Optional[str] = None
 
 
+DOUYIN_UA = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 "
+    "(KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+)
+
+
+def extract_router_data(html: str):
+    i = html.find("_ROUTER_DATA")
+    if i < 0:
+        return None
+    start = html.find("{", i)
+    end = html.find("</script>", start)
+    if start < 0 or end < 0:
+        return None
+    raw = html[start:end].strip().rstrip(";")
+    try:
+        return json.loads(raw)
+    except Exception:
+        return None
+
+
+async def parse_douyin(url: str):
+    """抖音：短链 -> aweme_id -> 分享页 _ROUTER_DATA -> playwm 换 play 得无水印直链。"""
+    try:
+        async with httpx.AsyncClient(
+            timeout=25, follow_redirects=True, headers={"User-Agent": DOUYIN_UA}
+        ) as cli:
+            r = await cli.get(url)
+            final = str(r.url)
+            m = re.search(r"(?:video|note)/(\d+)", final) or re.search(
+                r"(?:video|note)/(\d+)", url
+            )
+            aid = m.group(1) if m else None
+            if not aid:
+                m2 = re.search(r'"aweme_id":"(\d+)"', r.text)
+                aid = m2.group(1) if m2 else None
+            if not aid:
+                return None
+
+            share = (
+                f"https://www.iesdouyin.com/share/video/{aid}/"
+                "?region=CN&mid=0&u_code=0&titleType=title"
+            )
+            r2 = await cli.get(share)
+            data = extract_router_data(r2.text)
+            if not data:
+                return None
+
+            page = (data.get("loaderData") or {}).get("video_(id)/page") or {}
+            vir = page.get("videoInfoRes") or {}
+            items = vir.get("item_list") or []
+            if not items:
+                return None
+
+            item = items[0]
+            video = item.get("video") or {}
+            urls = (video.get("play_addr") or {}).get("url_list") or []
+            clean = []
+            for u in urls:
+                u = u.replace("playwm", "play")
+                if u not in clean:
+                    clean.append(u)
+            if not clean:
+                return None
+
+            cover = (
+                ((video.get("cover") or {}).get("url_list") or [None])[0]
+                or ((video.get("origin_cover") or {}).get("url_list") or [None])[0]
+            )
+            dur = video.get("duration")
+
+            formats = [{
+                "format_id": f"dy{i}",
+                "ext": "mp4",
+                "resolution": "无水印" if i == 0 else f"备用线路{i + 1}",
+                "height": 720,
+                "filesize_str": "-",
+                "direct": u,
+            } for i, u in enumerate(clean)]
+
+            return {
+                "ok": True,
+                "type": "direct",
+                "title": item.get("desc") or f"抖音 {aid}",
+                "thumbnail": cover,
+                "duration": fmt_duration((dur or 0) / 1000) if dur else "-",
+                "uploader": (item.get("author") or {}).get("nickname"),
+                "webpage_url": final,
+                "formats": formats,
+            }
+    except Exception:
+        return None
+
+
 @app.post("/api/parse")
 async def api_parse(req: ParseReq):
     try:
         url = check_url(req.url)
     except ValueError as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+    host = urlparse(url).hostname or ""
+    if "douyin.com" in host:
+        d = await parse_douyin(url)
+        if d:
+            return d
 
     # 直链 m3u8 走专用解析
     if ".m3u8" in url.lower():
@@ -343,6 +452,35 @@ async def api_save(
 
     token = uuid.uuid4().hex[:10]
     safe_name = (filename or f"video_{token}").replace("/", "_").replace("\\", "_")
+
+    if is_direct_media(url):
+        out_path = os.path.join(CACHE_DIR, f"{token}.mp4")
+        ua = DOUYIN_UA if ("douyin" in url or "snssdk" in url) else UA
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(30, read=120), follow_redirects=True
+            ) as cli:
+                async with cli.stream(
+                    "GET", url, headers={"User-Agent": ua, "Referer": referer or url}
+                ) as r:
+                    if r.status_code >= 400:
+                        return JSONResponse(
+                            {"ok": False, "error": f"直链返回 HTTP {r.status_code}"},
+                            status_code=502,
+                        )
+                    with open(out_path, "wb") as fh:
+                        async for chunk in r.aiter_bytes():
+                            fh.write(chunk)
+        except Exception as e:
+            return JSONResponse(
+                {"ok": False, "error": f"直链下载失败：{e}"}, status_code=502
+            )
+        if os.path.exists(out_path) and os.path.getsize(out_path) > 1024:
+            return FileResponse(
+                out_path, media_type="video/mp4",
+                filename=f"{safe_name}.mp4", background=_cleanup_later(out_path),
+            )
+        return JSONResponse({"ok": False, "error": "直链下载内容为空"}, status_code=500)
 
     if ".m3u8" in url.lower():
         # ffmpeg 直接合并 m3u8

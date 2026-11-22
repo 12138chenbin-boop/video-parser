@@ -168,12 +168,13 @@ function render(d) {
   }
   d.formats.forEach((f, i) => {
     const isM3u8 = d.type === 'm3u8';
+    const isDirect = d.type === 'direct';
     list.appendChild(rowEl({
       main: f.resolution || f.ext || '未知',
       res: f.ext,
       size: f.filesize_str || '-',
       fid: f.format_id,
-      url: isM3u8 ? f.direct : d.webpage_url,
+      url: (isM3u8 || isDirect) ? (f.direct || d.webpage_url) : d.webpage_url,
       extra: f.note,
       main_: i === 0
     }, i === 0));
@@ -181,7 +182,9 @@ function render(d) {
 
   $('note').textContent = d.type === 'm3u8'
     ? '提示：点“下载”由服务器用 ffmpeg 合并分片，耗时取决于源速度。若失败多为 Referer 未填或分片签名过期。'
-    : '提示：点“下载”由服务器用 yt-dlp 拉取并合并为 mp4。部分站点需要登录 Cookie，可按需在 app.py 增加 --cookies。';
+    : d.type === 'direct'
+      ? '提示：点“下载”由服务器拉取无水印 mp4 直链，通常几秒完成。'
+      : '提示：点“下载”由服务器用 yt-dlp 拉取并合并为 mp4。部分站点需要登录 Cookie，可按需在 app.py 增加 --cookies。';
 
   $('card').classList.add('show');
 }
